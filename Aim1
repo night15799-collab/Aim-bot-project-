@@ -1,0 +1,232 @@
+-- =================================================================
+-- CONFIGURATION (ตั้งค่า Aimbot, Auto Fire & ESP Box)
+-- =================================================================
+local Settings = {
+    AimbotEnabled = true,        -- เปิด/ปิด Aimbot
+    AutoFireEnabled = true,      -- เปิด/ปิด การยิงให้อัตโนมัติเมื่อล็อกเป้าได้
+    TeamCheck = true,            -- ไม่ล็อกใส่พวกเดียวกัน
+    FOV_Radius = 120,            -- ขนาดวงกลม FOV (พิกเซล)
+    TargetPart = "Head",         -- ชิ้นส่วนที่จะเล็ง ("Head", "HumanoidRootPart")
+    Smoothness = 1,              -- ความสมูท (1 = ล็อกทันที)
+    
+    -- ตั้งค่า ESP Box
+    ESP_Enabled = true,          -- เปิด/ปิด กรอบ ESP Box ครอบตัวศัตรู
+    ESP_Color = Color3.fromRGB(0, 255, 100), -- สีของกรอบ ESP (สีเขียว)
+    ESP_Thickness = 1,           -- ความหนาของกรอบ ESP (ปรับให้บางคมกริบ)
+    
+    -- ตั้งค่าสี FOV & Tracer
+    FOVColor = Color3.fromRGB(0, 255, 100),     -- สีวงกลม FOV: สีเขียว
+    TracerColor = Color3.fromRGB(255, 30, 30),  -- สีเส้น Tracer: สีแดง
+    ShowTracer = true,           -- เปิด/ปิด เส้นลากชี้เป้า
+    TracerThickness = 1          -- ความหนาเส้น Tracer
+}
+
+-- =================================================================
+-- SERVICES & VARIABLES
+-- =================================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- เก็บการสร้าง ESP Box สำหรับผู้เล่นทุกคน
+local ESPBoxes = {}
+
+-- =================================================================
+-- 1. วงกลม FOV (สีเขียว)
+-- =================================================================
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+FOVCircle.Radius = Settings.FOV_Radius
+FOVCircle.Filled = false
+FOVCircle.Color = Settings.FOVColor
+FOVCircle.Thickness = 1
+FOVCircle.Transparency = 0.8
+FOVCircle.Visible = Settings.AimbotEnabled
+
+-- =================================================================
+-- 2. เส้น TRACER (สีแดง)
+-- =================================================================
+local TracerLine = Drawing.new("Line")
+TracerLine.Visible = false
+TracerLine.Color = Settings.TracerColor
+TracerLine.Thickness = Settings.TracerThickness
+TracerLine.Transparency = 1
+
+-- =================================================================
+-- 3. ระบบ ESP BOX (สร้างกรอบสี่เหลี่ยม)
+-- =================================================================
+local function createESPBox(player)
+    local box = Drawing.new("Square")
+    box.Visible = false
+    box.Color = Settings.ESP_Color
+    box.Thickness = Settings.ESP_Thickness
+    box.Transparency = 0.8
+    box.Filled = false
+    
+    ESPBoxes[player] = box
+end
+
+local function removeESPBox(player)
+    if ESPBoxes[player] then
+        ESPBoxes[player]:Remove()
+        ESPBoxes[player] = nil
+    end
+end
+
+-- สร้าง ESP ให้ทุกคนที่อยู่ในเกมอยู่แล้ว
+for _, player in pairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        createESPBox(player)
+    end
+end
+
+-- คอยดักจับเมื่อมีผู้เล่นใหม่เข้า/ออกจากเกม
+Players.PlayerAdded:Connect(function(player)
+    if player ~= LocalPlayer then
+        createESPBox(player)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    removeESPBox(player)
+end)
+
+-- =================================================================
+-- 4. ฟังก์ชันค้นหาศัตรูในวง FOV
+-- =================================================================
+local function getClosestPlayerInFOV()
+    local closestPlayer = nil
+    local shortestDistance = Settings.FOV_Radius
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") then
+            local humanoid = player.Character.Humanoid
+            
+            if humanoid.Health > 0 and (not Settings.TeamCheck or player.Team ~= LocalPlayer.Team) then
+                local targetPart = player.Character:FindFirstChild(Settings.TargetPart)
+                
+                if targetPart then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+
+                    if onScreen then
+                        local target2D = Vector2.new(screenPos.X, screenPos.Y)
+                        local distance = (screenCenter - target2D).Magnitude
+
+                        if distance < shortestDistance then
+                            shortestDistance = distance
+                            closestPlayer = player
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+-- =================================================================
+-- 5. ฟังก์ชันยิงปืนอัตโนมัติ (Auto Fire)
+-- =================================================================
+local isFiring = false
+local function fireWeapon()
+    if isFiring then return end
+    isFiring = true
+    
+    if mouse1press and mouse1release then
+        mouse1press()
+        task.wait(0.05)
+        mouse1release()
+    elseif mouse1click then
+        mouse1click()
+    end
+    
+    task.wait(0.05)
+    isFiring = false
+end
+
+-- =================================================================
+-- 6. MAIN RENDER LOOP (อัปเดตตำแหน่ง ESP Box + Aimbot + Visuals)
+-- =================================================================
+RunService.RenderStepped:Connect(function()
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    -- 6.1 อัปเดต FOV
+    FOVCircle.Visible = Settings.AimbotEnabled
+    FOVCircle.Position = screenCenter
+    FOVCircle.Radius = Settings.FOV_Radius
+
+    -- 6.2 อัปเดต ESP Box สำหรับผู้เล่นทุกคนใน Server
+    for player, box in pairs(ESPBoxes) do
+        if Settings.ESP_Enabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") then
+            local humanoid = player.Character.Humanoid
+            local hrp = player.Character.HumanoidRootPart
+            
+            if humanoid.Health > 0 and (not Settings.TeamCheck or player.Team ~= LocalPlayer.Team) then
+                local hrpPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+                
+                if onScreen then
+                    -- คำนวณขนาดสเกลกรอบตามระยะห่างของตัวละคร
+                    local headPos = Camera:WorldToViewportPoint(player.Character.Head.Position + Vector3.new(0, 0.5, 0))
+                    local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+                    
+                    local height = math.abs(headPos.Y - legPos.Y)
+                    local width = height / 1.5
+                    
+                    box.Size = Vector2.new(width, height)
+                    box.Position = Vector2.new(hrpPos.X - width / 2, hrpPos.Y - height / 2)
+                    box.Color = Settings.ESP_Color
+                    box.Thickness = Settings.ESP_Thickness
+                    box.Visible = true
+                else
+                    box.Visible = false
+                end
+            else
+                box.Visible = false
+            end
+        else
+            box.Visible = false
+        end
+    end
+
+    -- 6.3 อัปเดต Aimbot, Tracer และ Auto Fire
+    if Settings.AimbotEnabled then
+        local targetPlayer = getClosestPlayerInFOV()
+
+        if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild(Settings.TargetPart) then
+            local targetPart = targetPlayer.Character[Settings.TargetPart]
+            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+
+            if onScreen then
+                -- หมุนกล้องหานัยน์ตา/หัวศัตรู
+                local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+                
+                if Settings.Smoothness >= 1 then
+                    Camera.CFrame = targetCFrame
+                else
+                    Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, Settings.Smoothness)
+                end
+
+                -- แสดงเส้น Tracer สีแดง
+                if Settings.ShowTracer then
+                    TracerLine.From = screenCenter
+                    TracerLine.To = Vector2.new(screenPos.X, screenPos.Y)
+                    TracerLine.Visible = true
+                end
+
+                -- Auto Fire
+                if Settings.AutoFireEnabled then
+                    task.spawn(fireWeapon)
+                end
+            else
+                TracerLine.Visible = false
+            end
+        else
+            TracerLine.Visible = false
+        end
+    else
+        TracerLine.Visible = false
+    end
+end)
