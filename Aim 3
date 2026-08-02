@@ -1,0 +1,245 @@
+-- =================================================================
+-- CONFIGURATION (ตั้งค่าระบบใหม่ทั้งหมด)
+-- =================================================================
+local Settings = {
+    AimbotEnabled = true,        -- เปิด/ปิด Aimbot
+    TeamCheck = true,            -- ไม่ล็อกใส่พวกเดียวกัน
+    WallCheck = true,            -- [ใหม่] เช็กกำแพงบัง (ล็อกเฉพาะตัวที่มองเห็น)
+    FOV_Radius = 150,            -- รัศมีวงกลม FOV
+    TargetPart = "Head",         -- ชิ้นส่วนที่จะเล็ง ("Head", "HumanoidRootPart")
+    Smoothness = 1,              -- ความสมูทในการล็อก (1 = ล็อกทันที)
+    
+    -- ตั้งค่า ESP Box & Tracer
+    ESP_Enabled = true,          -- เปิด/ปิด กรอบ ESP
+    ESP_Color = Color3.fromRGB(0, 255, 100),
+    ESP_Thickness = 1,
+    
+    ShowTracer = true,           -- เปิด/ปิด เส้น Tracer
+    TracerColor = Color3.fromRGB(255, 30, 30),
+    TracerThickness = 1
+}
+
+-- =================================================================
+-- SERVICES & VARIABLES
+-- =================================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local ESPBoxes = {}
+local isMouseDown = false -- ตรวจสอบการกดคลิกซ้าย
+
+-- =================================================================
+-- 1. สร้างวงกลม FOV แบบปรับปรุงใหม่ (Rainbow Line)
+-- =================================================================
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+FOVCircle.Radius = Settings.FOV_Radius
+FOVCircle.Filled = false
+FOVCircle.Thickness = 2 -- ปรับความหนาขึ้นเล็กน้อยเพื่อให้มองเห็นชัด
+FOVCircle.Transparency = 1
+FOVCircle.Visible = Settings.AimbotEnabled
+
+-- =================================================================
+-- 2. สร้างเส้น TRACER
+-- =================================================================
+local TracerLine = Drawing.new("Line")
+TracerLine.Visible = false
+TracerLine.Color = Settings.TracerColor
+TracerLine.Thickness = Settings.TracerThickness
+TracerLine.Transparency = 1
+
+-- =================================================================
+-- 3. ตรวจจับการกดคลิกซ้าย (ล็อกเฉพาะตอนยิง)
+-- =================================================================
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.UserInputType == Enum.UserInputType.MouseButton1 then
+        isMouseDown = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        isMouseDown = false
+    end
+end)
+
+-- =================================================================
+-- 4. ระบบ ESP BOX
+-- =================================================================
+local function createESPBox(player)
+    local box = Drawing.new("Square")
+    box.Visible = false
+    box.Color = Settings.ESP_Color
+    box.Thickness = Settings.ESP_Thickness
+    box.Transparency = 0.8
+    box.Filled = false
+    ESPBoxes[player] = box
+end
+
+local function removeESPBox(player)
+    if ESPBoxes[player] then
+        ESPBoxes[player]:Remove()
+        ESPBoxes[player] = nil
+    end
+end
+
+for _, player in pairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then createESPBox(player) end
+end
+
+Players.PlayerAdded:Connect(function(player)
+    if player ~= LocalPlayer then createESPBox(player) end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    removeESPBox(player)
+end)
+
+-- =================================================================
+-- 5. ฟังก์ชันเช็กกำแพง (Raycast Wall Check)
+-- =================================================================
+local function isVisible(targetPart, character)
+    if not Settings.WallCheck then return true end
+    
+    local origin = Camera.CFrame.Position
+    local destination = targetPart.Position
+    local direction = (destination - origin)
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = RaycastFilterType.Exclude
+    -- ข้ามตัวเราเอง และตัวละครศัตรูที่จะยิง เพื่อดูว่ามีกำแพงระหว่างกลางไหม
+    local ignoreList = {Camera, LocalPlayer.Character}
+    if character then
+        table.insert(ignoreList, character)
+    end
+    raycastParams.FilterDescendantsInstances = ignoreList
+    
+    local result = workspace:Raycast(origin, direction, raycastParams)
+    
+    -- ถ้า Raycast ไม่ชนสิ่งกีดขวางใดๆ แสดงว่ามองเห็นตัวศัตรูได้ชัดเจน
+    return result == nil
+end
+
+-- =================================================================
+-- 6. ฟังก์ชันค้นหาเป้าหมายที่มองเห็นและใกล้ที่สุดในวง FOV
+-- =================================================================
+local function getClosestPlayerInFOV()
+    local closestPlayer = nil
+    local shortestDistance = Settings.FOV_Radius
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") then
+            local humanoid = player.Character.Humanoid
+            
+            if humanoid.Health > 0 and (not Settings.TeamCheck or player.Team ~= LocalPlayer.Team) then
+                local targetPart = player.Character:FindFirstChild(Settings.TargetPart)
+                
+                if targetPart then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+
+                    if onScreen then
+                        local target2D = Vector2.new(screenPos.X, screenPos.Y)
+                        local distance = (screenCenter - target2D).Magnitude
+
+                        -- ต้องอยู่ในวง FOV + ระยะใกล้กว่าเป้าเดิม + มองเห็นได้จริง (ไม่ติดกำแพง)
+                        if distance < shortestDistance and isVisible(targetPart, player.Character) then
+                            shortestDistance = distance
+                            closestPlayer = player
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+-- =================================================================
+-- 7. MAIN RENDER LOOP (Rainbow FOV + Lock on Click + ESP)
+-- =================================================================
+local hue = 0
+
+RunService.RenderStepped:Connect(function()
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    -- 7.1 อัปเดตสีสายรุ้งให้วงกลม FOV (Rainbow RGB Effect)
+    hue = (hue + 0.005) % 1
+    local rainbowColor = Color3.fromHSV(hue, 1, 1)
+    
+    FOVCircle.Visible = Settings.AimbotEnabled
+    FOVCircle.Position = screenCenter
+    FOVCircle.Radius = Settings.FOV_Radius
+    FOVCircle.Color = rainbowColor
+
+    -- 7.2 อัปเดต ESP Box
+    for player, box in pairs(ESPBoxes) do
+        if Settings.ESP_Enabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") then
+            local humanoid = player.Character.Humanoid
+            local hrp = player.Character.HumanoidRootPart
+            
+            if humanoid.Health > 0 and (not Settings.TeamCheck or player.Team ~= LocalPlayer.Team) then
+                local hrpPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+                
+                if onScreen then
+                    local headPos = Camera:WorldToViewportPoint(player.Character.Head.Position + Vector3.new(0, 0.5, 0))
+                    local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+                    
+                    local height = math.abs(headPos.Y - legPos.Y)
+                    local width = height / 1.5
+                    
+                    box.Size = Vector2.new(width, height)
+                    box.Position = Vector2.new(hrpPos.X - width / 2, hrpPos.Y - height / 2)
+                    box.Color = Settings.ESP_Color
+                    box.Thickness = Settings.ESP_Thickness
+                    box.Visible = true
+                else
+                    box.Visible = false
+                end
+            else
+                box.Visible = false
+            end
+        else
+            box.Visible = false
+        end
+    end
+
+    -- 7.3 ล็อกเป้าเฉพาะตอน "กดยิง" (isMouseDown == true)
+    if Settings.AimbotEnabled then
+        local targetPlayer = getClosestPlayerInFOV()
+
+        if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild(Settings.TargetPart) then
+            local targetPart = targetPlayer.Character[Settings.TargetPart]
+            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+
+            if onScreen then
+                -- แสดงเส้น Tracer ชี้เป้า
+                if Settings.ShowTracer then
+                    TracerLine.From = screenCenter
+                    TracerLine.To = Vector2.new(screenPos.X, screenPos.Y)
+                    TracerLine.Visible = true
+                end
+
+                -- ทำการหมุนกล้องเฉพาะตอนที่คุณกดคลิกซ้าย (กดยิง) เท่านั้น
+                if isMouseDown then
+                    local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+                    if Settings.Smoothness >= 1 then
+                        Camera.CFrame = targetCFrame
+                    else
+                        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, Settings.Smoothness)
+                    end
+                end
+            else
+                TracerLine.Visible = false
+            end
+        else
+            TracerLine.Visible = false
+        end
+    else
+        TracerLine.Visible = false
+    end
+end)
